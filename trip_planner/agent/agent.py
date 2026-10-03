@@ -48,7 +48,7 @@ trip_agent = create_agent(
 
 def ask(text: str, thread: str) -> dict:
     """One turn of the conversation. The same thread keeps the memory."""
-    # TODO: implement the ask function to interact with the trip_agent
+
     config = {"configurable":{"thread_id": thread}}
     return trip_agent.invoke({"messages": [HumanMessage(content=text)]}, config)
 

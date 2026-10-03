@@ -44,7 +44,7 @@ class Itinerary(BaseModel):
 
     city: str = Field(description="The city the traveller plans to visit")
     daysplan: list[DayPlan] = Field(description="A list of days, each holding a list of activities")
-    unknowns: list[dict] = Field(description="A list of the output of the tools that could not confirm e.g '{tool: output}'")
+    unknowns: list[dict] = Field(description="A list of the output of the tools that could not confirm e.g. could not lookup something or No forecast available")
 
 
 ITINERARIES = []
