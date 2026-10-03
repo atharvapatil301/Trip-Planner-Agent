@@ -4,7 +4,7 @@
 how your deployed app gets found and graded.
 
 ```
-Deployed app: <your Render URL>
+Deployed app https://trip-planner-agent-ris7.onrender.com/
 ```
 
 Read `DADA1_SPEC.md` first.
