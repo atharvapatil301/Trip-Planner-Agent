@@ -1,11 +1,3 @@
-"""Trip planner: Tools
-
-Two rules, the same ones from the Husky Tech agent:
-  1. Return a readable string. Never raise, never return a bare dict.
-  2. When you have nothing useful, SAY SO in the return value. "No results —
-     try a nearby larger city" is a sentence the model can act on.
-"""
-
 import os
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
@@ -17,7 +9,7 @@ load_dotenv()
 GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 EVENTS_URL = "https://app.ticketmaster.com/discovery/v2/events.json"
-ATTRACTIONS_URL="/discovery/v2/attractions"
+ATTRACTIONS_URL = "https://app.ticketmaster.com/discovery/v2/attractions.json"
 
 FORECAST_DAYS = 16          # all Open-Meteo will forecast: today + 15
 MAX_RESULTS = 3
@@ -89,8 +81,19 @@ def _geocode(city: str) -> tuple[str, float, float, str]:
     return label, top["latitude"], top["longitude"], note
 
 
-# NOTE: The tools already have some docstring descriptions
-# but you can modify them if you find the descriptions insufficient or inaccurate.
+GEOCODE_ERRORS = (ValueError, requests.RequestException)
+
+
+def _geocode_failure(city: str, error: Exception) -> str:
+    """Turn a _geocode exception into a sentence the model can act on."""
+    if isinstance(error, requests.RequestException):
+        return (f"Could not look up where '{city}' is: the geocoding service failed "
+                f"({error}). Tell the user you could not check, rather than guessing.")
+    return (f"No place matches '{city}'. Ask the user to check the spelling or name "
+            f"a nearby larger city. Do not guess where they meant.")
+
+
+
 @tool
 def get_weather(city: str, date: str = "") -> str:
     """Get the weather forecast for a city on a date (YYYY-MM-DD).
@@ -104,8 +107,10 @@ def get_weather(city: str, date: str = "") -> str:
     what the user meant before you plan anything.
     """
 
-    label, latitude, longitude, note = _geocode(f"{city}")
-    
+    try:
+        label, latitude, longitude, note = _geocode(city)
+    except GEOCODE_ERRORS as e:
+        return _geocode_failure(city, e)
 
     params = {
     "latitude": latitude,
@@ -113,9 +118,12 @@ def get_weather(city: str, date: str = "") -> str:
     "daily": "weather_code",
     "timezone": "auto",
     "forecast_days": 16,
-    }   
+    }
 
-    response = requests.get(url=FORECAST_URL, params=params)
+    try:
+        response = requests.get(url=FORECAST_URL, params=params, timeout=15)
+    except requests.RequestException as e:
+        return f"The forecast service failed ({e}). Tell the user you could not check the weather."
 
     if response.status_code==200:
 
@@ -130,7 +138,7 @@ def get_weather(city: str, date: str = "") -> str:
         i = daily["time"].index(date)
 
         weather_code = daily["weather_code"][i]
-        condition = WEATHER_CODES[weather_code]
+        condition = WEATHER_CODES.get(weather_code, f"code {weather_code}")
 
         return f"Forecast for {label} on {date}: {condition}. {note}"
 
@@ -144,8 +152,10 @@ def find_attractions(city: str, interest: str = "") -> str:
     Use this for things to SEE. For food use find_restaurants; for things
     happening on a particular date use find_events.
     """
-    label, _, _, note= _geocode(city)
-
+    try:
+        label, _, _, note = _geocode(city)
+    except GEOCODE_ERRORS as e:
+        return _geocode_failure(city, e)
 
     query = f"Find attractions in {label} and the attraction of interest is {interest}."
 
@@ -162,14 +172,39 @@ def find_restaurants(city: str, budget: str = "") -> str:
     """
 
 
-    label, _, _, note= _geocode(city)
+    try:
+        label, _, _, note = _geocode(city)
+    except GEOCODE_ERRORS as e:
+        return _geocode_failure(city, e)
 
     query = f"Find places to eat in {label} for a {budget} budget"
     return note + _search(query)
 
 
+def _price_text(event: dict) -> str:
+    """Ticketmaster rarely publishes a price, and a 0-0 range is a placeholder."""
+    ranges = event.get("priceRanges")
+    if not ranges:
+        return "price not published"
+    lo, hi = ranges[0].get("min", 0), ranges[0].get("max", 0)
+    if lo == 0 and hi == 0:
+        return "price listed as 0 (placeholder, not free)"
+    return f"{lo}–{hi} {ranges[0].get('currency', '')}".strip()
+
+
+def _format_event(event: dict) -> str:
+    """One Ticketmaster event as a line: name | local date | venue, city | price | url."""
+    venues = event.get("_embedded", {}).get("venues") or [{}]
+    venue = venues[0].get("name", "venue TBA")
+    venue_city = venues[0].get("city", {}).get("name")
+    where = f"{venue}, {venue_city}" if venue_city else venue
+    when = event.get("dates", {}).get("start", {}).get("localDate", "date TBA")
+    return (f"- {event.get('name', 'untitled')} | {when} | {where} | "
+            f"{_price_text(event)} | {event.get('url', 'no link')}")
+
+
 @tool
-def find_events(city: str, date: str = "", category: str = "", attraction_id: str="") -> str:
+def find_events(city: str, date: str = "", category: str = "") -> str:
     """Find real ticketed events in a city: concerts, sport, theatre, festivals.
 
     date is YYYY-MM-DD and means that day in the venue's own local time; leave
@@ -199,7 +234,10 @@ def find_events(city: str, date: str = "", category: str = "", attraction_id: st
     """
    
 
-    label ,lat, long, note= _geocode(city)
+    try:
+        label, _, _, note = _geocode(city)
+    except GEOCODE_ERRORS as e:
+        return _geocode_failure(city, e)
 
 
     today = datetime.now()
@@ -214,16 +252,18 @@ def find_events(city: str, date: str = "", category: str = "", attraction_id: st
     params = {
         "apikey": os.getenv("TICKETMASTER_API_KEY"),
         "city": city,
-        "localStartDateTime": local_start,
-        "localEndDateTime": local_end,
+        # localEndDateTime is not a real parameter and is silently ignored, which
+        # leaves the window open-ended. The combined "start,end" form closes it.
+        "localStartEndDateTime": f"{local_start},{local_end}",
         "size": 20,
     }
     if category:
         params["classificationName"] = category
-    if attraction_id:
-        params["attractionId"] = attraction_id
-    
-    response = requests.get(url = EVENTS_URL, params= params, timeout=20)
+
+    try:
+        response = requests.get(url=EVENTS_URL, params=params, timeout=20)
+    except requests.RequestException as e:
+        return f"The Ticketmaster search failed ({e}). Tell the user you could not check events."
 
 
     if response.status_code==200:
@@ -233,21 +273,7 @@ def find_events(city: str, date: str = "", category: str = "", attraction_id: st
             return "No events found"
         
         else:
-            price_text = lambda e: (
-                "price not published" if not e.get("priceRanges")
-                else "price listed as 0 (placeholder, not free)"
-                if e["priceRanges"][0].get("min", 0) == 0 and e["priceRanges"][0].get("max", 0) == 0
-                else f"{e['priceRanges'][0].get('min')}–{e['priceRanges'][0].get('max')} {e['priceRanges'][0].get('currency', '')}"
-            )
-            
-            lines = [
-                f"- {event['name']} | "
-                f"{event['dates']['start'].get('localDate', 'date TBA')} | "
-                f"{event['_embedded']['venues'][0].get('name', 'Venue TBA')} | "
-                f"{price_text(event)} | {event['url']}"
-                for event in result
-            ]
-            message = "\n".join(lines)
+            message = "\n".join(_format_event(event) for event in result)
 
         return f"Events in {label} are as follows: {message}. {note}"
 
@@ -263,7 +289,10 @@ def get_transit_info(city: str) -> str:
     up rather than estimating it.
     """
 
-    label, _, _, note= _geocode(city)
+    try:
+        label, _, _, note = _geocode(city)
+    except GEOCODE_ERRORS as e:
+        return _geocode_failure(city, e)
 
     query = f"How do you get around in the city of {city}. Exact location is {label}"
 
@@ -272,51 +301,87 @@ def get_transit_info(city: str) -> str:
 
 
 @tool
-def find_performer_events(performer: str, city: str, date:str =""):
-    """Get the details of a specific ticketed attraction.
+def find_performer_events(performer: str, city: str, date: str = "") -> str:
+    """Find when and where a specific performer, team or touring show plays in a city.
 
-    The attractions returned by the API are not tourist attractions. More like
-    ticketed tourist exhibitions. An "attraction" in this API is a performer, team or touring show
+    Use this when the user names an act ("Are the Celtics playing while I'm in
+    Boston?", "Is Hamilton on in Chicago?"). For "what's on in a city" with no act
+    named, use find_events instead.
 
-    If the API returns "no such performer", please say so and do not guess anything.
-    If the API returns "the performer exists but has nothing in that city", say it as is.
-    If the input (either city or performer) is something ambigious and matches mutliple outputs, do not select
-    just the first one, instead mention everything that comes up and confirm with the
-    user which one of the options they meant. And then proceed with the planning
+    date is YYYY-MM-DD (that day in the venue's local time). Leave it empty to see
+    all upcoming dates in the city.
 
-    This tool does not replace the find_attractions tool
+    An "attraction" in Ticketmaster means a performer, team or touring show, NOT a
+    tourist sight. This tool cannot replace find_attractions: searching it for
+    "museum" returns touring ticketed exhibitions, not the city's museums.
 
+    This tool can return four different answers. Relay them as they are:
+      - no performer matches the name: say so, do not guess another act;
+      - several acts match the name: list them and ask the user which one they
+        meant before going on. Never pick one yourself;
+      - the performer exists but has nothing in that city or on that date: that
+        is a real answer, and it is different from "no such performer";
+      - the events themselves, with real dates and venues. Prices follow the same
+        rules as find_events: "price not published" is not free.
     """
+    key = os.getenv("TICKETMASTER_API_KEY")
+    if not key:
+        return "Ticketmaster is not configured (no API key), so performer events are unavailable."
 
-    attraction_params = {
-        "apikey": os.getenv("TICKETMASTER_API_KEY"), 
-        "keyword": performer
-    }
+    # Step 1: name -> attraction id.
+    try:
+        r = requests.get(ATTRACTIONS_URL, timeout=20,
+                         params={"apikey": key, "keyword": performer, "size": 20})
+        r.raise_for_status()
+        attractions = r.json().get("_embedded", {}).get("attractions", [])
+    except (requests.RequestException, ValueError) as e:
+        return f"The Ticketmaster performer search failed ({e}). Tell the user you could not check."
 
-    attraction_response = requests.get(url=ATTRACTIONS_URL, params=attraction_params, timeout=20)
-    if attraction_response.status_code==200:
-        attractions = attraction_response.json().get("_embedded", {}).get("attractions", [])
+    if not attractions:
+        return (f"No performer, team or show called '{performer}' is listed on "
+                f"Ticketmaster. Do not guess a similar act.")
 
-        if not attractions:
-            return "No performer found"
+    def describe(a):
+        upcoming = a.get("upcomingEvents", {}).get("_total", 0)
+        return f"{a['name']} ({upcoming} upcoming events)"
 
-        exact = [a for a in attractions if a["name"].lower() == performer.lower()]
+    # The keyword search is fuzzy and ranks by popularity, so the first hit is often
+    # not the act asked for: "Taylor Swift" returns tribute bands ahead of her.
+    exact = [a for a in attractions if a["name"].strip().lower() == performer.strip().lower()]
+    if len(exact) == 1:
+        match = exact[0]
+    elif len(exact) == 0 and len(attractions) == 1:
+        match = attractions[0]
+    else:
+        options = exact or attractions[:8]
+        listed = "\n".join(f"- {describe(a)}" for a in options)
+        return (f"'{performer}' is ambiguous: it matches several acts on Ticketmaster.\n"
+                f"{listed}\nAsk the user which one they mean. Do not pick one yourself.")
 
-        if len(exact) > 1:
-            return f"Which one of these attractions did you mean? {','.join(exact)}"
-        else:
-            attraction_id = attractions[0]["id"]
-            result = find_events.invoke({"city":city, "attractionId":attraction_id, "date": date})
+    name = match["name"]
+    picked = "" if name.lower() == performer.strip().lower() else f" (closest match to '{performer}')"
+    if match.get("upcomingEvents", {}).get("_total", 0) == 0:
+        return f"{name}{picked} is on Ticketmaster but has no upcoming events anywhere."
 
-            if result == "No events found":
-                return f"{performer} exists but has nothing in {city} for that period"
-            else:
-                return result
+    # Step 2: attraction id + city (+ date) -> events.
+    params = {"apikey": key, "attractionId": match["id"], "city": city,
+              "sort": "date,asc", "size": 20}
+    if date:
+        params["localStartEndDateTime"] = f"{date}T00:00:00,{date}T23:59:59"
+    try:
+        r = requests.get(EVENTS_URL, params=params, timeout=20)
+        r.raise_for_status()
+        events = r.json().get("_embedded", {}).get("events", [])
+    except (requests.RequestException, ValueError) as e:
+        return f"Found {name}, but the event search failed ({e}). Tell the user you could not check."
 
-    return f"Error: {attraction_response.status_code}"
+    when = f"on {date}" if date else "in the upcoming schedule"
+    if not events:
+        return (f"{name}{picked} exists and has upcoming events, but none in {city} {when}. "
+                f"This covers Ticketmaster listings only.")
 
-
-    
+    lines = "\n".join(_format_event(e) for e in events)
+    return f"{name}{picked} in {city} {when}:\n{lines}"
 
 
 TOOLS = [get_weather, get_transit_info, find_restaurants, find_events, find_attractions, find_performer_events]

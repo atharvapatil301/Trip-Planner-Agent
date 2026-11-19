@@ -1,8 +1,5 @@
 # DADA1 — test prompts
 
-Run these eight in order to test your app.
-
-Run them against your deployed app if it is up, otherwise `python -m agent.agent`.
 
 ---
 
@@ -36,6 +33,5 @@ Look for: `find_events` either uses a real category (`music`) or notices that "j
 **9 — The right day.** *What music is on in Boston on 2026-10-03?*
 Look for: every event returned is actually dated 2026-10-03. **Failing look:** a confident list of events from October 2nd. Nothing errors when this goes wrong — the dates in the answer are the only place it shows.
 
-**Then:** finish a planning conversation and run `build_itinerary`. Check the JSON: are `cost` fields `"unknown"` where nothing was stated, and does `unknowns` list the hours you never confirmed?
 
 ---

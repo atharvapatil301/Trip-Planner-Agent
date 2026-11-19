@@ -2,10 +2,6 @@
 
 To be used to extract one typed itinerary from the conversation.
 
-Please note `cost` is a STRING, not a number, so that
-"unknown" is something the itinerary can actually say, and so a price can carry
-where it came from. If it were a float the model would have to invent a figure
-to fill it, and a made-up price looks exactly like a real one.
 """
 
 from typing import Literal
@@ -34,7 +30,7 @@ class DayPlan(BaseModel):
 
     date: str = Field(description="What date is it on that day (in YYYY-MM-DD format), e.g. 2026-01-04")
     weather: str = Field(description="The weather forecast for a city on a date")
-    ativity: list[Activity] = Field(description="List of activities")
+    ativities: list[Activity] = Field(description="List of activities")
 
 
 
@@ -43,7 +39,7 @@ class Itinerary(BaseModel):
     """A complete plan for a trip."""
 
     city: str = Field(description="The city the traveller plans to visit")
-    daysplan: list[DayPlan] = Field(description="A list of days, each holding a list of activities")
+    days: list[DayPlan] = Field(description="A list of days, each holding a list of activities")
     unknowns: list[dict] = Field(description="A list of the output of the tools that could not confirm e.g. could not lookup something or No forecast available")
 
 

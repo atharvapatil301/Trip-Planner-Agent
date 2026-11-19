@@ -27,6 +27,7 @@ import uuid
 
 import gradio as gr
 from langchain.messages import HumanMessage
+from langchain_core.runnables import RunnableConfig
 
 
 def _text_of(message) -> str:
@@ -41,11 +42,23 @@ def _text_of(message) -> str:
     return "".join(parts)
 
 
+def session_config(request: gr.Request | None) -> RunnableConfig:
+    """A checkpointer config whose thread_id is unique to one browser session.
+
+    Gradio gives every page load its own session_hash, so each visitor (and each
+    tab) gets a separate conversation. Falls back to a random id when there is no
+    session, e.g. a direct API call.
+    """
+    thread_id = getattr(request, "session_hash", None) or uuid.uuid4().hex
+    return {"configurable": {"thread_id": thread_id}}
+
+
 class GradioUI:
     def __init__(self, agent, config=None, title="LangGraph Agent", description=None):
         self.agent = agent
-        # If no config is given, make a fresh conversation thread for this session.
-        self.config = config or {"configurable": {"thread_id": uuid.uuid4().hex}}
+        # A fixed config pins every visitor to one thread. Leave it as None
+        # to give each browser session its own conversation.
+        self.config = config
         self.title = title
         self.description = description
 
@@ -53,13 +66,14 @@ class GradioUI:
     # The chat function Gradio calls on every user turn.
     # It is a *generator*: each `yield` updates the UI, which is how the
     # tool-call entries show up before the final answer is ready.
+    # Gradio injects `request` because of its gr.Request annotation.
     # ------------------------------------------------------------------
-    def _chat(self, user_message, history):
+    def _chat(self, user_message, history, request: gr.Request):
         shown = []
 
         stream = self.agent.stream(
             {"messages": [HumanMessage(content=user_message)]},
-            self.config,
+            self.config or session_config(request),
             stream_mode="updates",  # one update per graph node that ran
         )
 

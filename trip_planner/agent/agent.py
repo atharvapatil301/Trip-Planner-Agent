@@ -30,8 +30,8 @@ from langgraph.checkpoint.memory import InMemorySaver
 from .tools import TOOLS
 from .prompts import SYSTEM_PROMPT
 
-# You must use an API model for online deployment. Otherwise, we cannot test it properly.
-# Options: Gemini, OpenRouter, NVIDIA as posted on Piazza
+
+
 model = ChatGoogleGenerativeAI(model="gemini-3.5-flash-lite")
 
 # Local alternative for testing during development

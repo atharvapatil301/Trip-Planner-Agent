@@ -1,27 +1,16 @@
-"""Deployment entry point: the trip planner behind a chat UI.
-
-    python app.py          # local, http://127.0.0.1:7860
-
-On Render this file is what the service runs. Render sets $PORT and expects the
-process to listen on 0.0.0.0, which is the only difference from running locally.
-See DADA1_SPEC.md section 7 for the Render settings.
-"""
-
 import os
 
 import gradio as gr
 
-from agentui import GradioUI
+from agentui import GradioUI, session_config
 
 from agent.agent import model, trip_agent
 from agent.itinerary import build_itinerary
 
-CONFIG = {"configurable": {"thread_id": "web-demo"}}
 
-
-def make_itinerary():
-    """Read the conversation back out of the checkpointer and extract the plan."""
-    state = trip_agent.get_state(CONFIG)
+def make_itinerary(request: gr.Request):
+    """Read this session's conversation out of the checkpointer and extract the plan."""
+    state = trip_agent.get_state(session_config(request))
     messages = state.values.get("messages", [])
     if not messages:
         return {"note": "Plan something in the chat first, then press this."}
@@ -32,7 +21,7 @@ def make_itinerary():
     return plan.model_dump(mode="json")
 
 
-ui = GradioUI(trip_agent, CONFIG, title="Trip Planner")
+ui = GradioUI(trip_agent, title="Trip Planner")  # one thread per browser session
 
 # Take the ChatInterface as it comes, then REOPEN it to append our button.
 # `with demo:` re-enters the existing Blocks context. Building the chat inside a
